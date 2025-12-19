@@ -8,7 +8,7 @@ env:
   VIDEO_FILE_EXTENSION: ".mp4"
 
   # Stream configuration
-  CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/new/"
+  CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/english/"
   YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"
   YOUTUBE_STREAM_KEY: "yyz1-w50g-u0gx-yufk-bt7b"
 
