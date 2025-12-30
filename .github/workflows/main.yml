@@ -10,21 +10,24 @@ env:
   # Stream configuration
   CLOUDFLARE_R2_URL: "https://pub-b19fa9b28a6640638cebf21d187c3e25.r2.dev/english/"
   YOUTUBE_RTMP_URL: "rtmp://a.rtmp.youtube.com/live2/"
-  YOUTUBE_STREAM_KEY: "yyz1-w50g-u0gx-yufk-bt7b"
+  
+  # TWO YouTube stream keys
+  YOUTUBE_STREAM_KEY_A: "yyz1-w50g-u0gx-yufk-bt7b"
+  YOUTUBE_STREAM_KEY_B: "0vky-mmwa-v8t9-j5x0-d6cj"
 
   # Runtime configuration (minutes)
   BASE_RUNTIME: 20000
-  START_JITTER_MAX: 2
+  START_JITTER_MAX: 3
   END_JITTER_MAX: 10
 
-  # YouTube preparation delay
+  # YouTube preparation delay (seconds)
   YOUTUBE_PREP_DELAY: 10
 
-  # FFmpeg settings (YouTube-safe, automatic)
+  # FFmpeg settings
   VIDEO_CODEC: "libx264"
   VIDEO_PRESET: "veryfast"
-  VIDEO_BITRATE: "1000k"
-  BUFFER_SIZE: "2000k"
+  VIDEO_BITRATE: "1500k"
+  BUFFER_SIZE: "3000k"
   AUDIO_CODEC: "aac"
   AUDIO_BITRATE: "96k"
   AUDIO_SAMPLE_RATE: "44100"
@@ -41,68 +44,118 @@ jobs:
       cancel-in-progress: true
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      - name: Install FFmpeg
+      - name: 🔑 Select which key to use (Auto-toggle A↔B)
+        id: select-key
+        run: |
+          if [ -f "last_stream_key.txt" ]; then
+            LAST_KEY=$(cat last_stream_key.txt)
+            if [ "$LAST_KEY" = "KEY_A" ]; then
+              CURRENT_KEY="KEY_B"
+              YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_B"
+            else
+              CURRENT_KEY="KEY_A"
+              YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_A"
+            fi
+          else
+            CURRENT_KEY="KEY_A"
+            YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_A"
+          fi
+
+          echo "$CURRENT_KEY" > last_stream_key.txt
+          echo "current-key=$CURRENT_KEY" >> $GITHUB_OUTPUT
+          echo "youtube-stream-key=$YOUTUBE_STREAM_KEY" >> $GITHUB_OUTPUT
+
+      - name: 🔧 Install FFmpeg
         run: |
           sudo apt update
           sudo apt install -y ffmpeg
+          ffmpeg -version
 
-      - name: Select random video
+      - name: 🎲 Select random video
         id: random-video
         run: |
           RANDOM_NUM=$(( RANDOM % ($VIDEO_FILE_RANGE_END - $VIDEO_FILE_RANGE_START + 1) + $VIDEO_FILE_RANGE_START ))
-          echo "video-file=${VIDEO_FILE_PREFIX}${RANDOM_NUM}${VIDEO_FILE_EXTENSION}" >> $GITHUB_OUTPUT
+          VIDEO_FILE="${VIDEO_FILE_PREFIX}${RANDOM_NUM}${VIDEO_FILE_EXTENSION}"
+          echo "video-file=$VIDEO_FILE" >> $GITHUB_OUTPUT
 
-      - name: Calculate runtime
+      - name: ⏱️ Calculate runtime
         id: runtime
         run: |
           START_JITTER_SECONDS=$(( RANDOM % ($START_JITTER_MAX * 60 + 1) ))
           END_JITTER_SECONDS=$(( RANDOM % ($END_JITTER_MAX * 60 + 1) ))
           TOTAL_SECONDS=$(( BASE_RUNTIME * 60 + START_JITTER_SECONDS + END_JITTER_SECONDS ))
-          echo "start-jitter=${START_JITTER_SECONDS}" >> $GITHUB_OUTPUT
-          echo "total-runtime=${TOTAL_SECONDS}" >> $GITHUB_OUTPUT
-          echo "timeout=$((TOTAL_SECONDS + 3))" >> $GITHUB_OUTPUT
 
-      - name: Wait for start jitter
-        run: sleep ${{ steps.runtime.outputs.start-jitter }}
+          echo "start-jitter=$START_JITTER_SECONDS" >> $GITHUB_OUTPUT
+          echo "total-runtime=$TOTAL_SECONDS" >> $GITHUB_OUTPUT
 
-      - name: Prepare YouTube
-        run: sleep ${YOUTUBE_PREP_DELAY}
+      - name: ⏳ Wait for start jitter
+        run: |
+          sleep ${{ steps.runtime.outputs.start-jitter }}
 
-      - name: Stream to YouTube (AUTO + STABLE)
+      - name: 🟡 Allow YouTube ingest preparation
+        run: |
+          sleep ${YOUTUBE_PREP_DELAY}
+
+      - name: 🔴 Stream to YouTube (STABLE & SAFE)
         run: |
           cat > stream.sh << 'EOF'
           #!/bin/bash
+          set -euo pipefail
 
           ffmpeg \
-            -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-            -re -stream_loop -1 \
+            -re \
+            -fflags +genpts \
+            -stream_loop -1 \
             -thread_queue_size 512 \
-            -i "${CLOUDFLARE_R2_URL}${{ steps.random-video.outputs.video-file }}" \
+            -i "${CLOUDFLARE_R2_URL}${VIDEO_FILE}" \
             -r 30 -g 60 -keyint_min 60 -sc_threshold 0 \
-            -c:v ${VIDEO_CODEC} -preset ${VIDEO_PRESET} \
-            -b:v ${VIDEO_BITRATE} -maxrate ${VIDEO_BITRATE} -bufsize ${BUFFER_SIZE} \
+            -force_key_frames "expr:gte(t,n_forced*2)" \
+            -c:v libx264 -preset veryfast \
+            -b:v 1500k -maxrate 1500k -bufsize 3000k \
             -pix_fmt yuv420p -profile:v high -level 4.2 \
-            -c:a ${AUDIO_CODEC} -b:a ${AUDIO_BITRATE} -ar ${AUDIO_SAMPLE_RATE} -ac ${AUDIO_CHANNELS} \
-            -af aresample=async=1 \
-            -f flv -flvflags no_duration_filesize \
+            -c:a aac -b:a 96k \
+            -ar 44100 -ac 2 \
+            -af aresample=async=1:first_pts=0 \
+            -f flv \
+            -flvflags no_duration_filesize \
+            -rtmp_live live \
+            -reconnect 1 \
+            -reconnect_streamed 1 \
+            -reconnect_delay_max 2 \
             "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" &
-          
-          PID=$!
-          sleep ${{ steps.runtime.outputs.total-runtime }}
-          kill -SIGTERM $PID
-          sleep 3
-          kill -9 $PID 2>/dev/null || true
+
+          FFMPEG_PID=$!
+          sleep ${TOTAL_RUNTIME}
+          kill -SIGINT $FFMPEG_PID
+          wait $FFMPEG_PID || true
           EOF
 
           chmod +x stream.sh
-          timeout ${{ steps.runtime.outputs.timeout }}s ./stream.sh || true
 
-      - name: Done
+          export VIDEO_FILE="${{ steps.random-video.outputs.video-file }}"
+          export TOTAL_RUNTIME="${{ steps.runtime.outputs.total-runtime }}"
+          export YOUTUBE_STREAM_KEY="${{ steps.select-key.outputs.youtube-stream-key }}"
+
+          ./stream.sh
+
+      - name: 💾 Commit and push key state
         if: always()
         run: |
-          echo "Stream finished"
-          echo "Video: ${{ steps.random-video.outputs.video-file }}"
-          echo "Duration: ${{ steps.runtime.outputs.total-runtime }} seconds"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add last_stream_key.txt
+          git commit -m "Update last used stream key" || true
+          git push origin HEAD:${{ github.ref_name }} || true
+
+      - name: ✅ Done
+        if: always()
+        run: |
+          echo "=================================="
+          echo "Stream finished successfully"
+          echo "=================================="
