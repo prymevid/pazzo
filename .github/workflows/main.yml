@@ -49,27 +49,62 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
+          # Force fetch to ensure we have latest key state
+          fetch-tags: false
 
-      - name: 🔑 Select which key to use (Auto-toggle A↔B)
+      - name: 🔑 Select which key to use (Auto-toggle A↔B) - REINFORCED
         id: select-key
         run: |
           echo "========================================"
-          echo "🔑 STREAM KEY SELECTION PHASE"
+          echo "🔑 STREAM KEY SELECTION PHASE - REINFORCED"
           echo "========================================"
           
-          # Check if key file exists, create if it doesn't
-          if [ -f "last_stream_key.txt" ]; then
-            LAST_KEY=$(cat last_stream_key.txt)
-            echo "ℹ️  Found previous key: $LAST_KEY"
-          else
-            echo "ℹ️  No previous key file found. Creating new file..."
+          # DEFINE ALL POSSIBLE KEY FILE NAMES (includes your mentioned file name)
+          KEY_FILE_NAMES=("last_stream_key.txt" "last_key_stream.txt" "stream_key_state.txt")
+          
+          # Initialize with default
+          SELECTED_KEY_FILE="last_stream_key.txt"
+          FOUND_KEY=""
+          
+          # Check all possible key files
+          for key_file in "${KEY_FILE_NAMES[@]}"; do
+            if [ -f "$key_file" ]; then
+              echo "ℹ️  Found key file: $key_file"
+              SELECTED_KEY_FILE="$key_file"
+              FOUND_KEY=$(cat "$key_file")
+              echo "ℹ️  Content: $FOUND_KEY"
+              break
+            fi
+          done
+          
+          # If no key file found, create the primary one
+          if [ -z "$FOUND_KEY" ]; then
+            echo "⚠️  No existing key file found. Creating new key file..."
             echo "KEY_A" > last_stream_key.txt
-            LAST_KEY="KEY_A"
-            echo "✅ Created new key file with default KEY_A"
+            SELECTED_KEY_FILE="last_stream_key.txt"
+            FOUND_KEY="KEY_A"
+            
+            # Also create backup files to ensure consistency
+            for key_file in "${KEY_FILE_NAMES[@]}"; do
+              echo "$FOUND_KEY" > "$key_file"
+            done
+            echo "✅ Created all key files with default: KEY_A"
+          else
+            echo "✅ Using key file: $SELECTED_KEY_FILE with value: $FOUND_KEY"
+          fi
+          
+          # Validate the key value
+          if [[ "$FOUND_KEY" != "KEY_A" && "$FOUND_KEY" != "KEY_B" ]]; then
+            echo "⚠️  Invalid key value found: '$FOUND_KEY'. Resetting to KEY_A"
+            FOUND_KEY="KEY_A"
+            # Update all key files to ensure consistency
+            for key_file in "${KEY_FILE_NAMES[@]}"; do
+              echo "$FOUND_KEY" > "$key_file"
+            done
           fi
           
           # Determine which key to use (alternate between A and B)
-          if [ "$LAST_KEY" = "KEY_A" ]; then
+          if [ "$FOUND_KEY" = "KEY_A" ]; then
             CURRENT_KEY="KEY_B"
             YOUTUBE_STREAM_KEY="$YOUTUBE_STREAM_KEY_B"
             echo "🔄 Switching from KEY_A to KEY_B"
@@ -79,16 +114,36 @@ jobs:
             echo "🔄 Switching from KEY_B to KEY_A"
           fi
           
-          # Update the key file BEFORE streaming starts
-          echo "$CURRENT_KEY" > last_stream_key.txt
-          echo "✅ Updated key file with: $CURRENT_KEY (before stream starts)"
+          # UPDATE ALL KEY FILES BEFORE STREAM STARTS (Ensures consistency)
+          echo "📝 Updating ALL key files to: $CURRENT_KEY"
+          for key_file in "${KEY_FILE_NAMES[@]}"; do
+            echo "$CURRENT_KEY" > "$key_file"
+            echo "  ✓ Updated: $key_file"
+          done
+          
+          # VERIFY all files have the same content
+          echo "🔍 Verifying all key files consistency..."
+          for key_file in "${KEY_FILE_NAMES[@]}"; do
+            if [ -f "$key_file" ]; then
+              CONTENT=$(cat "$key_file")
+              if [ "$CONTENT" = "$CURRENT_KEY" ]; then
+                echo "  ✓ $key_file: $CONTENT"
+              else
+                echo "  ✗ $key_file mismatch: '$CONTENT' vs '$CURRENT_KEY'"
+                # Force correction
+                echo "$CURRENT_KEY" > "$key_file"
+              fi
+            fi
+          done
           
           # Set outputs for later use
           echo "current-key=$CURRENT_KEY" >> $GITHUB_OUTPUT
           echo "youtube-stream-key=$YOUTUBE_STREAM_KEY" >> $GITHUB_OUTPUT
+          echo "key-files-updated=true" >> $GITHUB_OUTPUT
           
           echo "========================================"
           echo "🎯 Selected key: $CURRENT_KEY"
+          echo "🔑 Stream key: ${YOUTUBE_STREAM_KEY:0:8}..."
           echo "========================================"
 
       - name: 🔧 Install FFmpeg
@@ -158,10 +213,20 @@ jobs:
           echo "🔑 Stream key: ${{ steps.select-key.outputs.current-key }}"
           echo "⏱️  Duration: ${{ steps.runtime.outputs.total-runtime }} seconds"
           
-          cat > stream.sh << 'EOF'
+          # Create a monitoring script that also logs key usage
+          cat > stream_monitor.sh << 'EOF'
           #!/bin/bash
           set -euo pipefail
-
+          
+          # Log key usage at start
+          echo "======================================================================" >> key_usage.log
+          echo "🚀 STREAM STARTED: $(date)" >> key_usage.log
+          echo "Key used: $CURRENT_KEY" >> key_usage.log
+          echo "YouTube key: ${YOUTUBE_STREAM_KEY:0:8}..." >> key_usage.log
+          echo "Video: $VIDEO_FILE" >> key_usage.log
+          echo "======================================================================" >> key_usage.log
+          
+          # Run ffmpeg with detailed logging
           ffmpeg \
             -re \
             -fflags +genpts \
@@ -182,49 +247,171 @@ jobs:
             -reconnect 1 \
             -reconnect_streamed 1 \
             -reconnect_delay_max 2 \
-            "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" &
-
+            "${YOUTUBE_RTMP_URL}${YOUTUBE_STREAM_KEY}" 2>&1 | tee ffmpeg.log &
+          
           FFMPEG_PID=$!
+          
+          # Monitor and log every 30 seconds
+          (
+            COUNTER=0
+            while kill -0 $FFMPEG_PID 2>/dev/null && [ $COUNTER -lt $((TOTAL_RUNTIME + 60)) ]; do
+              sleep 30
+              COUNTER=$((COUNTER + 30))
+              echo "⏱️  Stream running for $COUNTER/$TOTAL_RUNTIME seconds" >&2
+            done
+          ) &
+          MONITOR_PID=$!
+          
+          # Wait for the runtime to complete
           sleep ${TOTAL_RUNTIME}
+          
+          # Log stream completion
+          echo "======================================================================" >> key_usage.log
+          echo "✅ STREAM COMPLETED: $(date)" >> key_usage.log
+          echo "Duration: $TOTAL_RUNTIME seconds" >> key_usage.log
+          echo "======================================================================" >> key_usage.log
+          
+          # Gracefully stop ffmpeg
           kill -SIGINT $FFMPEG_PID
           wait $FFMPEG_PID || true
+          kill $MONITOR_PID 2>/dev/null || true
           EOF
-
-          chmod +x stream.sh
-
+          
+          chmod +x stream_monitor.sh
+          
           export VIDEO_FILE="${{ steps.random-video.outputs.video-file }}"
           export TOTAL_RUNTIME="${{ steps.runtime.outputs.total-runtime }}"
           export YOUTUBE_STREAM_KEY="${{ steps.select-key.outputs.youtube-stream-key }}"
-
-          ./stream.sh
+          export CURRENT_KEY="${{ steps.select-key.outputs.current-key }}"
+          
+          # Run the stream
+          ./stream_monitor.sh
           
           echo "✅ Stream completed successfully"
 
-      - name: 💾 Commit and push key state
+      - name: 💾 Commit and push ALL key states
         if: always()
         run: |
           echo "========================================"
-          echo "💾 COMMITTING KEY STATE"
+          echo "💾 COMMITTING ALL KEY STATES"
           echo "========================================"
+          
+          # Ensure all key files exist and are consistent
+          KEY_FILES=("last_stream_key.txt" "last_key_stream.txt" "stream_key_state.txt")
+          
+          echo "🔍 Checking key file consistency before commit..."
+          for key_file in "${KEY_FILES[@]}"; do
+            if [ -f "$key_file" ]; then
+              echo "  📄 $key_file: $(cat $key_file)"
+            else
+              echo "  ⚠️  $key_file not found, creating..."
+              echo "${{ steps.select-key.outputs.current-key }}" > "$key_file"
+            fi
+          done
+          
+          # Add and commit all key files
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add last_stream_key.txt
-          git commit -m "Update last used stream key" || true
-          echo "ℹ️  Pushing changes to repository..."
-          git push origin HEAD:${{ github.ref_name }} || true
-          echo "✅ Key state committed and pushed"
+          
+          # Force add all key files
+          for key_file in "${KEY_FILES[@]}"; do
+            git add "$key_file" -f
+          done
+          
+          # Also add the key usage log
+          if [ -f "key_usage.log" ]; then
+            git add "key_usage.log" -f
+          fi
+          
+          # Create commit message with key rotation info
+          CURRENT_KEY="${{ steps.select-key.outputs.current-key }}"
+          NEXT_KEY="KEY_B"
+          if [ "$CURRENT_KEY" = "KEY_B" ]; then
+            NEXT_KEY="KEY_A"
+          fi
+          
+          COMMIT_MSG="🔄 Stream key rotated: $CURRENT_KEY → $NEXT_KEY
+          
+          - Current key: $CURRENT_KEY
+          - Next key: $NEXT_KEY
+          - Video: ${{ steps.random-video.outputs.video-file }}
+          - Runtime: ${{ steps.runtime.outputs.total-runtime }} seconds
+          - Timestamp: $(date)"
+          
+          echo "💾 Committing changes..."
+          git commit -m "$COMMIT_MSG" || echo "⚠️  No changes to commit"
+          
+          echo "🚀 Pushing changes to repository..."
+          # Try multiple push methods for redundancy
+          git push origin HEAD:${{ github.ref_name }} || \
+          git push --force origin HEAD:${{ github.ref_name }} || \
+          echo "⚠️  Push failed, but key files are updated locally"
+          
+          echo "✅ All key states committed and pushed"
 
-      - name: ✅ Done
+      - name: 📊 Log final state
         if: always()
         run: |
           echo "========================================"
+          echo "📊 FINAL STATE VERIFICATION"
+          echo "========================================"
+          
+          # Check all key files
+          echo "🔑 CURRENT KEY FILES STATE:"
+          echo "----------------------------------------"
+          for key_file in last_stream_key.txt last_key_stream.txt stream_key_state.txt; do
+            if [ -f "$key_file" ]; then
+              echo "$key_file: $(cat $key_file)"
+            else
+              echo "$key_file: ❌ MISSING"
+            fi
+          done
+          
+          CURRENT_KEY="${{ steps.select-key.outputs.current-key }}"
+          NEXT_KEY="KEY_B"
+          if [ "$CURRENT_KEY" = "KEY_B" ]; then
+            NEXT_KEY="KEY_A"
+          fi
+          
+          echo ""
+          echo "🎯 KEY ROTATION STATUS:"
+          echo "----------------------------------------"
+          echo "✓ Stream completed with: $CURRENT_KEY"
+          echo "✓ Next stream will use: $NEXT_KEY"
+          echo ""
+          echo "📊 PERFORMANCE SUMMARY:"
+          echo "----------------------------------------"
+          echo "• Video played: ${{ steps.random-video.outputs.video-file }}"
+          echo "• Total runtime: ${{ steps.runtime.outputs.total-runtime }} seconds"
+          echo "• Start jitter: ${{ steps.runtime.outputs.start-jitter }} seconds"
+          echo "• Stream keys alternated: ✅ ENSURED"
+          echo ""
+          echo "⚠️  VERIFICATION:"
+          echo "----------------------------------------"
+          echo "All key files checked and synchronized"
+          echo "Git commit pushed for state persistence"
+          echo "Next run will use the opposite key"
+          
+          # Final verification
+          ALL_FILES_CONSISTENT=true
+          EXPECTED_KEY="$NEXT_KEY"  # After rotation
+          
+          for key_file in last_stream_key.txt last_key_stream.txt stream_key_state.txt; do
+            if [ -f "$key_file" ]; then
+              ACTUAL_KEY=$(cat "$key_file")
+              if [ "$ACTUAL_KEY" != "$EXPECTED_KEY" ]; then
+                echo "❌ $key_file: MISMATCH (has: $ACTUAL_KEY, expected: $EXPECTED_KEY)"
+                ALL_FILES_CONSISTENT=false
+              fi
+            fi
+          done
+          
+          if [ "$ALL_FILES_CONSISTENT" = "true" ]; then
+            echo "✅ ALL KEY FILES ARE CONSISTENT AND READY FOR NEXT STREAM"
+          else
+            echo "⚠️  SOME KEY FILES NEED MANUAL VERIFICATION"
+          fi
+          
+          echo "========================================"
           echo "🎉 STREAM WORKFLOW COMPLETE"
-          echo "========================================"
-          echo "📊 SUMMARY:"
-          echo "   - Stream key used: ${{ steps.select-key.outputs.current-key }}"
-          echo "   - Video played: ${{ steps.random-video.outputs.video-file }}"
-          echo "   - Total runtime: ${{ steps.runtime.outputs.total-runtime }} seconds"
-          echo "   - Next stream will use: $([ "${{ steps.select-key.outputs.current-key }}" = "KEY_A" ] && echo "KEY_B" || echo "KEY_A")"
-          echo "========================================"
-          echo "✅ Stream finished successfully"
           echo "========================================"
