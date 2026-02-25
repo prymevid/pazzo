@@ -19,16 +19,23 @@ R2_BUCKET_NAME = "store"
 
 def get_r2_client():
     """Get R2 client."""
-    return boto3.client(
-        's3',
-        endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
-        aws_access_key_id=R2_ACCESS_KEY,
-        aws_secret_access_key=R2_SECRET_KEY,
-        region_name='auto'
-    )
+    try:
+        return boto3.client(
+            's3',
+            endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+            aws_access_key_id=R2_ACCESS_KEY,
+            aws_secret_access_key=R2_SECRET_KEY,
+            region_name='auto'
+        )
+    except Exception as e:
+        print(f"❌ Error creating R2 client: {e}", file=sys.stderr)
+        return None
 
 def list_files_in_folder(client, folder_path):
     """List all files in a specific folder."""
+    if not client:
+        return []
+    
     try:
         prefix = folder_path if folder_path.endswith('/') else f"{folder_path}/"
         
@@ -61,23 +68,31 @@ def list_files_in_folder(client, folder_path):
             
             continuation_token = response.get('NextContinuationToken')
         
+        print(f"📂 Found {len(files)} files in {folder_path}")
         return files
     
     except ClientError as e:
-        print(f"Error listing files: {e}", file=sys.stderr)
+        print(f"❌ Error listing files: {e}", file=sys.stderr)
         return []
 
 def delete_file(client, key):
     """Delete a file."""
+    if not client:
+        return False
+    
     try:
         client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
+        print(f"✅ Deleted: {key}")
         return True
     except ClientError as e:
-        print(f"Error deleting {key}: {e}", file=sys.stderr)
+        print(f"❌ Error deleting {key}: {e}", file=sys.stderr)
         return False
 
 def copy_file(client, source_key, destination_key):
     """Copy a file."""
+    if not client:
+        return False
+    
     try:
         copy_source = {'Bucket': R2_BUCKET_NAME, 'Key': source_key}
         client.copy_object(
@@ -85,25 +100,54 @@ def copy_file(client, source_key, destination_key):
             Bucket=R2_BUCKET_NAME,
             Key=destination_key
         )
+        print(f"✅ Copied: {source_key} → {destination_key}")
         return True
     except ClientError as e:
-        print(f"Error copying {source_key}: {e}", file=sys.stderr)
+        print(f"❌ Error copying {source_key}: {e}", file=sys.stderr)
         return False
 
 def clean_folder(client, folder_path):
     """Delete all files in a folder."""
+    if not client:
+        return 0
+    
     files = list_files_in_folder(client, folder_path)
     count = 0
     
     for file in files:
         if delete_file(client, file):
             count += 1
-            print(f"Deleted: {file}")
     
     return count
 
+def save_result(result):
+    """Save result to JSON file."""
+    try:
+        with open('result.json', 'w') as f:
+            json.dump(result, f, indent=2)
+        print(f"📝 Result saved to result.json")
+    except Exception as e:
+        print(f"❌ Error saving result: {e}", file=sys.stderr)
+
+def test_connection(client):
+    """Test the R2 connection."""
+    if not client:
+        return False
+    
+    try:
+        client.head_bucket(Bucket=R2_BUCKET_NAME)
+        print("✅ Connected to R2 bucket successfully")
+        return True
+    except ClientError as e:
+        print(f"❌ Error connecting to bucket: {e}", file=sys.stderr)
+        return False
+
 def main():
     """Main function."""
+    print("="*60)
+    print("🚀 R2 File Mover Started")
+    print("="*60)
+    
     result = {
         "success": False,
         "message": "",
@@ -116,64 +160,77 @@ def main():
     
     try:
         # Initialize client
+        print("\n🔧 Initializing R2 client...")
         client = get_r2_client()
         
         # Test connection
-        client.head_bucket(Bucket=R2_BUCKET_NAME)
-        print("✅ Connected to R2 bucket successfully")
+        if not test_connection(client):
+            result["message"] = "Failed to connect to R2 bucket"
+            save_result(result)
+            sys.exit(1)
         
         # Step 1: List files in source folder
+        print("\n📁 Step 1: Listing source folder...")
         source_prefix = "instagram/store/"
         files = list_files_in_folder(client, source_prefix)
         
         if not files:
             result["message"] = "No files found in instagram/store folder"
-            print(json.dumps(result, indent=2))
-            return
-        
-        print(f"Found {len(files)} files in {source_prefix}")
+            print("⚠️ No files found in source folder")
+            save_result(result)
+            sys.exit(0)
         
         # Step 2: Select random file
+        print("\n🎲 Step 2: Selecting random file...")
         selected_file = random.choice(files)
         result["selected_file"] = selected_file
         print(f"Selected: {selected_file}")
         
         # Step 3: Clean await folder
+        print("\n🧹 Step 3: Cleaning destination folder...")
         await_prefix = "instagram/await/"
         result["cleaned_count"] = clean_folder(client, await_prefix)
-        print(f"Cleaned {result['cleaned_count']} files from {await_prefix}")
+        print(f"Cleaned {result['cleaned_count']} files")
         
         # Step 4: Copy to destination
+        print("\n📋 Step 4: Copying file...")
         destination_key = "instagram/await/1.mp4"
         if copy_file(client, selected_file, destination_key):
             result["copied_to"] = destination_key
-            print(f"✅ Copied to: {destination_key}")
         else:
             raise Exception("Failed to copy file")
         
         # Step 5: Delete original
+        print("\n🗑️ Step 5: Deleting original...")
         if delete_file(client, selected_file):
             result["deleted_from"] = selected_file
-            print(f"✅ Deleted original: {selected_file}")
         else:
             raise Exception("Failed to delete original file")
         
         result["success"] = True
-        result["message"] = f"Successfully moved {selected_file} to {destination_key}"
+        result["message"] = f"✅ Successfully moved {selected_file} to {destination_key}"
+        print(f"\n✅ {result['message']}")
         
     except Exception as e:
-        result["message"] = f"Error: {str(e)}"
-        print(f"❌ Error: {e}", file=sys.stderr)
+        error_msg = str(e)
+        print(f"\n❌ Error: {error_msg}", file=sys.stderr)
+        result["message"] = f"Error: {error_msg}"
     
-    # Output result as JSON
-    print("\n" + "="*50)
-    print("RESULT:")
-    print(json.dumps(result, indent=2))
-    print("="*50)
-    
-    # Save result to file
-    with open('result.json', 'w') as f:
-        json.dump(result, f, indent=2)
+    finally:
+        # Always save the result
+        print("\n💾 Saving result...")
+        save_result(result)
+        
+        print("\n" + "="*60)
+        print("📊 FINAL RESULT:")
+        print(json.dumps(result, indent=2))
+        print("="*60)
+        
+        # Exit with appropriate code
+        if result["success"]:
+            sys.exit(0)
+        else:
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
