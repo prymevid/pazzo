@@ -1,18 +1,11 @@
 name: Move Random File from Instagram Store
 
 on:
-  # Manual trigger
   workflow_dispatch:
-  
-  # Schedule - runs every hour
   schedule:
-    - cron: '0 * * * *'  # Every hour at minute 0
-  
-  # Also trigger on push to main branch (for testing)
+    - cron: '0 * * * *'
   push:
     branches: [ main ]
-    
-  # Allow HTTP trigger via repository_dispatch
   repository_dispatch:
     types: [move-random-file]
 
@@ -22,10 +15,10 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
-      
+        uses: actions/checkout@v4 # Also updated checkout to v4 for best practice
+        
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Updated to v5
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -43,7 +36,8 @@ jobs:
           echo "status=$?" >> $GITHUB_OUTPUT
       
       - name: Upload result as artifact
-        uses: actions/upload-artifact@v3
+        # FIXED: Changed from v3 to v4
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: move-result
@@ -60,4 +54,6 @@ jobs:
         if: success()
         run: |
           echo "✅ File move operation completed successfully!"
-          cat result.json | jq .message
+          # Optional: Add jq installation if you want to parse JSON
+          # sudo apt-get install -y jq
+          cat result.json | python -m json.tool # Display formatted JSON
