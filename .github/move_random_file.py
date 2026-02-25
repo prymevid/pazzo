@@ -6,18 +6,19 @@ Move a random file from instagram/store to instagram/await/1.mp4
 import os
 import sys
 import random
+import json
 import boto3
 from botocore.exceptions import ClientError
 from datetime import datetime
 
-# Configuration from environment variables
-R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY_ID')
-R2_SECRET_KEY = os.environ.get('R2_SECRET_ACCESS_KEY')
-R2_ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID')
-R2_BUCKET_NAME = os.environ.get('R2_BUCKET_NAME', 'store')
+# Hardcoded R2 Configuration
+R2_ACCESS_KEY = "cce1f2c14e7a447616404e8a2e885265"
+R2_SECRET_KEY = "33fa236d4d58c8d4c8f507888deccd0c667a95eac9c818c3499b7a4a60595ccb"
+R2_ACCOUNT_ID = "0d0a0a287282172b39fb04d9334d8346"
+R2_BUCKET_NAME = "store"
 
 def get_r2_client():
-    """Get R2 client from environment variables."""
+    """Get R2 client."""
     return boto3.client(
         's3',
         endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
@@ -114,19 +115,12 @@ def main():
     }
     
     try:
-        # Validate environment variables
-        if not all([R2_ACCESS_KEY, R2_SECRET_KEY, R2_ACCOUNT_ID]):
-            missing = []
-            if not R2_ACCESS_KEY: missing.append("R2_ACCESS_KEY_ID")
-            if not R2_SECRET_KEY: missing.append("R2_SECRET_ACCESS_KEY")
-            if not R2_ACCOUNT_ID: missing.append("R2_ACCOUNT_ID")
-            
-            result["message"] = f"Missing environment variables: {', '.join(missing)}"
-            print(json.dumps(result))
-            sys.exit(1)
-        
         # Initialize client
         client = get_r2_client()
+        
+        # Test connection
+        client.head_bucket(Bucket=R2_BUCKET_NAME)
+        print("✅ Connected to R2 bucket successfully")
         
         # Step 1: List files in source folder
         source_prefix = "instagram/store/"
@@ -134,8 +128,8 @@ def main():
         
         if not files:
             result["message"] = "No files found in instagram/store folder"
-            print(json.dumps(result))
-            sys.exit(0)
+            print(json.dumps(result, indent=2))
+            return
         
         print(f"Found {len(files)} files in {source_prefix}")
         
@@ -153,14 +147,14 @@ def main():
         destination_key = "instagram/await/1.mp4"
         if copy_file(client, selected_file, destination_key):
             result["copied_to"] = destination_key
-            print(f"Copied to: {destination_key}")
+            print(f"✅ Copied to: {destination_key}")
         else:
             raise Exception("Failed to copy file")
         
         # Step 5: Delete original
         if delete_file(client, selected_file):
             result["deleted_from"] = selected_file
-            print(f"Deleted original: {selected_file}")
+            print(f"✅ Deleted original: {selected_file}")
         else:
             raise Exception("Failed to delete original file")
         
@@ -169,17 +163,17 @@ def main():
         
     except Exception as e:
         result["message"] = f"Error: {str(e)}"
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"❌ Error: {e}", file=sys.stderr)
     
     # Output result as JSON
+    print("\n" + "="*50)
+    print("RESULT:")
     print(json.dumps(result, indent=2))
+    print("="*50)
     
-    # Exit with appropriate code
-    if result["success"]:
-        sys.exit(0)
-    else:
-        sys.exit(1)
+    # Save result to file
+    with open('result.json', 'w') as f:
+        json.dump(result, f, indent=2)
 
 if __name__ == "__main__":
-    import json
     main()
