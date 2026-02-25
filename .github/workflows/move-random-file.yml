@@ -17,6 +17,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
+      - name: 🔍 DEBUG - List ALL files in repository
+        run: |
+          echo "=========================================="
+          echo "Current directory: $(pwd)"
+          echo "=========================================="
+          echo "1. Files in root directory:"
+          ls -la
+          echo ""
+          echo "2. Files in .github directory (if exists):"
+          if [ -d ".github" ]; then
+            ls -la .github/
+          else
+            echo ".github directory not found"
+          fi
+          echo ""
+          echo "3. Files in .github/workflows directory (if exists):"
+          if [ -d ".github/workflows" ]; then
+            ls -la .github/workflows/
+          else
+            echo ".github/workflows directory not found"
+          fi
+          echo ""
+          echo "4. Searching for all Python files:"
+          find . -name "*.py" -type f | sort
+          echo ""
+          echo "5. Searching for requirements.txt:"
+          find . -name "requirements.txt" -type f
+          echo ""
+          echo "6. Complete directory tree:"
+          find . -type f | sort
+          echo "=========================================="
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -25,41 +57,65 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install boto3==1.34.0
-          pip list | grep boto3
-      
-      - name: Run file mover
-        id: move
-        run: |
-          python move_random_file.py
-          echo "exit_code=$?" >> $GITHUB_OUTPUT
-      
-      - name: Debug - List files after run
-        run: |
-          echo "Current directory contents:"
-          ls -la
-          echo "Looking for result.json:"
-          if [ -f result.json ]; then
-            echo "✅ result.json found"
-            echo "File contents:"
-            cat result.json
+          # Try multiple possible locations for requirements.txt
+          if [ -f "requirements.txt" ]; then
+            echo "✅ Found requirements.txt in root"
+            pip install -r requirements.txt
+          elif [ -f ".github/requirements.txt" ]; then
+            echo "✅ Found requirements.txt in .github folder"
+            pip install -r .github/requirements.txt
           else
-            echo "❌ result.json not found"
+            echo "⚠️ No requirements.txt found, installing boto3 directly"
+            pip install boto3==1.34.0
+          fi
+      
+      - name: Find and run Python script
+        run: |
+          # Try all possible locations for the Python script
+          SCRIPT_FOUND=0
+          
+          # Possible script locations
+          LOCATIONS=(
+            "move_random_file.py"
+            ".github/move_random_file.py"
+            "src/move_random_file.py"
+            "scripts/move_random_file.py"
+            "python/move_random_file.py"
+          )
+          
+          for LOC in "${LOCATIONS[@]}"; do
+            if [ -f "$LOC" ]; then
+              echo "✅ Found script at: $LOC"
+              echo "Running: python $LOC"
+              python "$LOC"
+              SCRIPT_FOUND=1
+              break
+            fi
+          done
+          
+          if [ $SCRIPT_FOUND -eq 0 ]; then
+            echo "❌ Could not find move_random_file.py anywhere!"
+            echo ""
+            echo "Creating a temporary test script to debug:"
+            cat > test_script.py << 'EOF'
+import os
+import sys
+print("Test script running successfully!")
+print(f"Current directory: {os.getcwd()}")
+print(f"Python version: {sys.version}")
+print("Directory contents:")
+for item in os.listdir('.'):
+    print(f"  - {item}")
+EOF
+            python test_script.py
+            exit 1
           fi
       
       - name: Upload result as artifact
         uses: actions/upload-artifact@v4
-        if: always()  # This ensures upload even on failure
+        if: always()
         with:
           name: move-result
           path: result.json
-          if-no-files-found: warn  # Changed from error to warn
+          if-no-files-found: warn
           retention-days: 7
-      
-      - name: Final status
-        run: |
-          if [ ${{ steps.move.outputs.exit_code }} -eq 0 ]; then
-            echo "✅ File move operation completed successfully!"
-          else
-            echo "❌ File move operation failed!"
-          fi
