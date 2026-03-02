@@ -171,7 +171,7 @@ def main():
         
         # Step 1: List files in source folder
         print("\n📁 Step 1: Listing source folder...")
-        source_prefix = "instagram/store/"
+        source_prefix = "tiktok/store/"
         files = list_files_in_folder(client, source_prefix)
         
         if not files:
@@ -188,13 +188,13 @@ def main():
         
         # Step 3: Clean await folder
         print("\n🧹 Step 3: Cleaning destination folder...")
-        await_prefix = "instagram/await/"
+        await_prefix = "tiktok/await/"
         result["cleaned_count"] = clean_folder(client, await_prefix)
         print(f"Cleaned {result['cleaned_count']} files")
         
         # Step 4: Copy to destination
         print("\n📋 Step 4: Copying file...")
-        destination_key = "instagram/await/1.mp4"
+        destination_key = "tiktok/await/1.mp4"
         if copy_file(client, selected_file, destination_key):
             result["copied_to"] = destination_key
         else:
