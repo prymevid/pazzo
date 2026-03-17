@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Move a random file from instagram/store to instagram/await/1.mp4
+Move a random file from tiktok/store to tiktok/await/1.mp4
+All configurable settings are at the top of this file.
 """
 
 import os
@@ -11,28 +12,67 @@ import boto3
 from botocore.exceptions import ClientError
 from datetime import datetime
 
-# Hardcoded R2 Configuration
-R2_ACCESS_KEY = "cce1f2c14e7a447616404e8a2e885265"
-R2_SECRET_KEY = "33fa236d4d58c8d4c8f507888deccd0c667a95eac9c818c3499b7a4a60595ccb"
-R2_ACCOUNT_ID = "0d0a0a287282172b39fb04d9334d8346"
-R2_BUCKET_NAME = "store"
+# =============================================================================
+# CONFIGURATION - EDIT THESE VALUES
+# =============================================================================
+
+# R2 Cloudflare Configuration
+R2_CONFIG = {
+    "access_key": "cce1f2c14e7a447616404e8a2e885265",
+    "secret_key": "33fa236d4d58c8d4c8f507888deccd0c667a95eac9c818c3499b7a4a60595ccb",
+    "account_id": "0d0a0a287282172b39fb04d9334d8346",
+    "bucket_name": "store",
+    "region": "auto"  # Default region for R2
+}
+
+# Folder paths (don't add leading/trailing slashes)
+SOURCE_CONFIG = {
+    "base_folder": "tiktok/store",  # Source folder to pick random file from
+    "dest_folder": "tiktok/await",  # Destination folder to clean and copy to
+    "dest_filename": "1.mp4",       # Filename for the copied file
+    "clean_dest_before_copy": True   # Whether to delete all files in dest folder before copying
+}
+
+# File naming and filtering
+FILE_CONFIG = {
+    "skip_placeholders": True,  # Skip folder placeholder files (ending with /)
+    "allowed_extensions": [],    # Empty list means allow all extensions
+                                # Example: ['.mp4', '.jpg', '.png']
+    "min_file_size_bytes": 0     # Minimum file size in bytes (0 = no minimum)
+}
+
+# Output and logging
+OUTPUT_CONFIG = {
+    "save_results_json": True,   # Save results to result.json
+    "results_filename": "result.json",
+    "verbose_logging": True      # Print detailed progress
+}
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
+
+def log(message, level="info"):
+    """Log message if verbose logging is enabled."""
+    if OUTPUT_CONFIG["verbose_logging"] or level == "error":
+        print(message)
 
 def get_r2_client():
     """Get R2 client."""
     try:
         return boto3.client(
             's3',
-            endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
-            aws_access_key_id=R2_ACCESS_KEY,
-            aws_secret_access_key=R2_SECRET_KEY,
-            region_name='auto'
+            endpoint_url=f'https://{R2_CONFIG["account_id"]}.r2.cloudflarestorage.com',
+            aws_access_key_id=R2_CONFIG["access_key"],
+            aws_secret_access_key=R2_CONFIG["secret_key"],
+            region_name=R2_CONFIG["region"]
         )
     except Exception as e:
-        print(f"❌ Error creating R2 client: {e}", file=sys.stderr)
+        log(f"❌ Error creating R2 client: {e}", "error")
         return None
 
 def list_files_in_folder(client, folder_path):
-    """List all files in a specific folder."""
+    """List all files in a specific folder with filtering."""
     if not client:
         return []
     
@@ -40,7 +80,7 @@ def list_files_in_folder(client, folder_path):
         prefix = folder_path if folder_path.endswith('/') else f"{folder_path}/"
         
         list_args = {
-            'Bucket': R2_BUCKET_NAME,
+            'Bucket': R2_CONFIG["bucket_name"],
             'Prefix': prefix
         }
         
@@ -56,10 +96,21 @@ def list_files_in_folder(client, folder_path):
             if 'Contents' in response:
                 for obj in response['Contents']:
                     key = obj['Key']
+                    size = obj.get('Size', 0)
                     
-                    # Skip folder placeholders
-                    if key.endswith('/'):
+                    # Skip folder placeholders if configured
+                    if FILE_CONFIG["skip_placeholders"] and key.endswith('/'):
                         continue
+                    
+                    # Filter by file size
+                    if size < FILE_CONFIG["min_file_size_bytes"]:
+                        continue
+                    
+                    # Filter by extension if configured
+                    if FILE_CONFIG["allowed_extensions"]:
+                        ext = os.path.splitext(key)[1].lower()
+                        if ext not in FILE_CONFIG["allowed_extensions"]:
+                            continue
                     
                     files.append(key)
             
@@ -68,11 +119,11 @@ def list_files_in_folder(client, folder_path):
             
             continuation_token = response.get('NextContinuationToken')
         
-        print(f"📂 Found {len(files)} files in {folder_path}")
+        log(f"📂 Found {len(files)} files in {folder_path}")
         return files
     
     except ClientError as e:
-        print(f"❌ Error listing files: {e}", file=sys.stderr)
+        log(f"❌ Error listing files: {e}", "error")
         return []
 
 def delete_file(client, key):
@@ -81,11 +132,11 @@ def delete_file(client, key):
         return False
     
     try:
-        client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
-        print(f"✅ Deleted: {key}")
+        client.delete_object(Bucket=R2_CONFIG["bucket_name"], Key=key)
+        log(f"✅ Deleted: {key}")
         return True
     except ClientError as e:
-        print(f"❌ Error deleting {key}: {e}", file=sys.stderr)
+        log(f"❌ Error deleting {key}: {e}", "error")
         return False
 
 def copy_file(client, source_key, destination_key):
@@ -94,16 +145,16 @@ def copy_file(client, source_key, destination_key):
         return False
     
     try:
-        copy_source = {'Bucket': R2_BUCKET_NAME, 'Key': source_key}
+        copy_source = {'Bucket': R2_CONFIG["bucket_name"], 'Key': source_key}
         client.copy_object(
             CopySource=copy_source,
-            Bucket=R2_BUCKET_NAME,
+            Bucket=R2_CONFIG["bucket_name"],
             Key=destination_key
         )
-        print(f"✅ Copied: {source_key} → {destination_key}")
+        log(f"✅ Copied: {source_key} → {destination_key}")
         return True
     except ClientError as e:
-        print(f"❌ Error copying {source_key}: {e}", file=sys.stderr)
+        log(f"❌ Error copying {source_key}: {e}", "error")
         return False
 
 def clean_folder(client, folder_path):
@@ -121,13 +172,16 @@ def clean_folder(client, folder_path):
     return count
 
 def save_result(result):
-    """Save result to JSON file."""
+    """Save result to JSON file if configured."""
+    if not OUTPUT_CONFIG["save_results_json"]:
+        return
+    
     try:
-        with open('result.json', 'w') as f:
+        with open(OUTPUT_CONFIG["results_filename"], 'w') as f:
             json.dump(result, f, indent=2)
-        print(f"📝 Result saved to result.json")
+        log(f"📝 Result saved to {OUTPUT_CONFIG['results_filename']}")
     except Exception as e:
-        print(f"❌ Error saving result: {e}", file=sys.stderr)
+        log(f"❌ Error saving result: {e}", "error")
 
 def test_connection(client):
     """Test the R2 connection."""
@@ -135,11 +189,11 @@ def test_connection(client):
         return False
     
     try:
-        client.head_bucket(Bucket=R2_BUCKET_NAME)
-        print("✅ Connected to R2 bucket successfully")
+        client.head_bucket(Bucket=R2_CONFIG["bucket_name"])
+        log("✅ Connected to R2 bucket successfully")
         return True
     except ClientError as e:
-        print(f"❌ Error connecting to bucket: {e}", file=sys.stderr)
+        log(f"❌ Error connecting to bucket: {e}", "error")
         return False
 
 def main():
@@ -148,6 +202,15 @@ def main():
     print("🚀 R2 File Mover Started")
     print("="*60)
     
+    # Display current configuration
+    print("\n📋 Current Configuration:")
+    print(f"  Source: {SOURCE_CONFIG['base_folder']}")
+    print(f"  Destination: {SOURCE_CONFIG['dest_folder']}/{SOURCE_CONFIG['dest_filename']}")
+    print(f"  Clean destination before copy: {SOURCE_CONFIG['clean_dest_before_copy']}")
+    if FILE_CONFIG["allowed_extensions"]:
+        print(f"  Allowed extensions: {', '.join(FILE_CONFIG['allowed_extensions'])}")
+    print("-" * 60)
+    
     result = {
         "success": False,
         "message": "",
@@ -155,12 +218,17 @@ def main():
         "deleted_from": None,
         "copied_to": None,
         "cleaned_count": 0,
+        "config": {
+            "source": SOURCE_CONFIG["base_folder"],
+            "destination": f"{SOURCE_CONFIG['dest_folder']}/{SOURCE_CONFIG['dest_filename']}",
+            "bucket": R2_CONFIG["bucket_name"]
+        },
         "timestamp": datetime.now().isoformat()
     }
     
     try:
         # Initialize client
-        print("\n🔧 Initializing R2 client...")
+        log("\n🔧 Initializing R2 client...")
         client = get_r2_client()
         
         # Test connection
@@ -170,38 +238,39 @@ def main():
             sys.exit(1)
         
         # Step 1: List files in source folder
-        print("\n📁 Step 1: Listing source folder...")
-        source_prefix = "tiktok/store/"
-        files = list_files_in_folder(client, source_prefix)
+        log("\n📁 Step 1: Listing source folder...")
+        files = list_files_in_folder(client, SOURCE_CONFIG["base_folder"])
         
         if not files:
-            result["message"] = "No files found in instagram/store folder"
-            print("⚠️ No files found in source folder")
+            result["message"] = f"No files found in {SOURCE_CONFIG['base_folder']} folder"
+            log("⚠️ No files found in source folder")
             save_result(result)
             sys.exit(0)
         
         # Step 2: Select random file
-        print("\n🎲 Step 2: Selecting random file...")
+        log("\n🎲 Step 2: Selecting random file...")
         selected_file = random.choice(files)
         result["selected_file"] = selected_file
-        print(f"Selected: {selected_file}")
+        log(f"Selected: {selected_file}")
         
-        # Step 3: Clean await folder
-        print("\n🧹 Step 3: Cleaning destination folder...")
-        await_prefix = "tiktok/await/"
-        result["cleaned_count"] = clean_folder(client, await_prefix)
-        print(f"Cleaned {result['cleaned_count']} files")
+        # Step 3: Clean destination folder if configured
+        if SOURCE_CONFIG["clean_dest_before_copy"]:
+            log("\n🧹 Step 3: Cleaning destination folder...")
+            result["cleaned_count"] = clean_folder(client, SOURCE_CONFIG["dest_folder"])
+            log(f"Cleaned {result['cleaned_count']} files")
+        else:
+            log("\n⏭️ Step 3: Skipping destination folder cleanup")
         
         # Step 4: Copy to destination
-        print("\n📋 Step 4: Copying file...")
-        destination_key = "tiktok/await/1.mp4"
+        log("\n📋 Step 4: Copying file...")
+        destination_key = f"{SOURCE_CONFIG['dest_folder']}/{SOURCE_CONFIG['dest_filename']}"
         if copy_file(client, selected_file, destination_key):
             result["copied_to"] = destination_key
         else:
             raise Exception("Failed to copy file")
         
         # Step 5: Delete original
-        print("\n🗑️ Step 5: Deleting original...")
+        log("\n🗑️ Step 5: Deleting original...")
         if delete_file(client, selected_file):
             result["deleted_from"] = selected_file
         else:
@@ -209,17 +278,18 @@ def main():
         
         result["success"] = True
         result["message"] = f"✅ Successfully moved {selected_file} to {destination_key}"
-        print(f"\n✅ {result['message']}")
+        log(f"\n✅ {result['message']}")
         
     except Exception as e:
         error_msg = str(e)
-        print(f"\n❌ Error: {error_msg}", file=sys.stderr)
+        log(f"\n❌ Error: {error_msg}", "error")
         result["message"] = f"Error: {error_msg}"
     
     finally:
-        # Always save the result
-        print("\n💾 Saving result...")
-        save_result(result)
+        # Always save the result if configured
+        if OUTPUT_CONFIG["save_results_json"]:
+            log("\n💾 Saving result...")
+            save_result(result)
         
         print("\n" + "="*60)
         print("📊 FINAL RESULT:")
