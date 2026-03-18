@@ -8,9 +8,12 @@ name: Move Random File from Instagram Store
 on:
   workflow_dispatch:  # Manual trigger
   schedule:
-    # Cron schedule: minute hour day-of-month month day-of-week
-    # Default: '0 10 * * *' = Runs daily at 10:00 AM UTC
-    - cron: '0 10 * * *'
+     # Morning quote: 7:30 AM UTC
+    - cron: '30 7 * * *'
+    # Evening quote: 8:30 PM UTC  
+    - cron: '30 20 * * *'
+    # Night quote: 10:00 PM UTC
+    - cron: '0 22 * * *'
   push:
     branches: [ main ]  # Branch to trigger on push
   repository_dispatch:
@@ -89,7 +92,7 @@ jobs:
         run: |
           echo "🚀 Running move_random_file.py"
           # CONFIG: Python script to execute
-          python move_random_file.py
+          python pinterestmover.py
       
       - name: Upload result as artifact
         uses: actions/upload-artifact@v4
