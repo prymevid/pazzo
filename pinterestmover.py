@@ -27,9 +27,9 @@ R2_CONFIG = {
 
 # Folder paths (don't add leading/trailing slashes)
 SOURCE_CONFIG = {
-    "base_folder": "tiktok/store",  # Source folder to pick random file from
-    "dest_folder": "tiktok/await",  # Destination folder to clean and copy to
-    "dest_filename": "1.mp4",       # Filename for the copied file
+    "base_folder": "pinterest/store",  # Source folder to pick random file from
+    "dest_folder": "pinterest/await",  # Destination folder to clean and copy to
+    "dest_filename": "1.jpg",       # Filename for the copied file
     "clean_dest_before_copy": True   # Whether to delete all files in dest folder before copying
 }
 
