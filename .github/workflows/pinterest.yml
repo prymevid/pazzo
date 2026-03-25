@@ -9,11 +9,11 @@ on:
   workflow_dispatch:  # Manual trigger
   schedule:
      # Morning quote: 7:30 AM UTC
-    - cron: '30 6 * * *'
+    - cron: '30 4 * * *'
     # Evening quote: 8:30 PM UTC  
-    - cron: '30 19 * * *'
+    - cron: '30 9 * * *'
     # Night quote: 10:00 PM UTC
-    - cron: '30 21 * * *'
+    - cron: '30 16 * * *'
   push:
     branches: [ main ]  # Branch to trigger on push
   repository_dispatch:
